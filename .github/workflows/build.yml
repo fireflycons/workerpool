@@ -1,0 +1,98 @@
+name: go-debugger
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: write
+
+jobs:
+  lint-and-test:
+    name: Lint and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install golangci-lint v2.4.0
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.4.0
+
+      - name: Run golangci-lint
+        run: golangci-lint run ./...
+
+      - name: Run tests
+        run: go test -v ./...
+
+  release:
+    name: Tag, Release & Publish Module
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !contains(github.event.head_commit.message, 'NO_RELEASE')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Read and validate version
+        id: version
+        run: |
+          VERSION="$(cat _VERSION.txt)"
+
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid version format: $VERSION"
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push git tag
+        run: |
+          TAG="v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+            exit 1
+          fi
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "v${{ env.VERSION }}"
+          release_name: "v${{ env.VERSION }}"
+          body: "Release v${{ env.VERSION }}"
+          draft: false
+          prerelease: false
+
+      - name: Notify Go module proxy
+        env:
+          GOPROXY: proxy.golang.org
+        run: |
+          MODULE_PATH=$(go mod edit -json | jq -r .Module.Path)
+          VERSION="v${VERSION}"
+
+          echo "Publishing $MODULE_PATH@$VERSION to Go module proxy"
+          go list -m "$MODULE_PATH@$VERSION"
