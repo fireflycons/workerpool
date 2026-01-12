@@ -19,6 +19,7 @@ One caveat is that while the number of concurrently running workers is limited, 
 - [type OptionFunc](<#OptionFunc>)
   - [func WithContext\[T any\]\(ctx context.Context\) OptionFunc\[T\]](<#WithContext>)
   - [func WithDeadLetterQueue\[T any\]\(dlq \*queue.Queue\[T\]\) OptionFunc\[T\]](<#WithDeadLetterQueue>)
+  - [func WithFastDrain\[T any\]\(fast bool\) OptionFunc\[T\]](<#WithFastDrain>)
   - [func WithNumWorkers\[T any\]\(n int\) OptionFunc\[T\]](<#WithNumWorkers>)
   - [func WithTaskNamer\[T any\]\(namer func\(int, T\) string\) OptionFunc\[T\]](<#WithTaskNamer>)
 
@@ -145,6 +146,15 @@ func WithDeadLetterQueue[T any](dlq *queue.Queue[T]) OptionFunc[T]
 WithDeadLetterQueue is a constructor function to set a dead letter queue for failed tasks.
 
 How this queue is populated depends on which Run method you are using. See the documentation for each Run method for details.
+
+<a name="WithFastDrain"></a>
+### func WithFastDrain
+
+```go
+func WithFastDrain[T any](fast bool) OptionFunc[T]
+```
+
+WithFastDrain is a constructor function to set whether to use fast draining of input queue to the dead letter queue \(if set\) at the end of the pool run. You should only use this if you are sure that the input queue is not still being populated by another goroutine.
 
 <a name="WithNumWorkers"></a>
 ### func WithNumWorkers
