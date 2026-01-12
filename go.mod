@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	github.com/cilium/workerpool v1.3.0
-	github.com/fireflycons/concurrentqueue v0.0.1
+	github.com/fireflycons/concurrentqueue v0.1.0
 	github.com/stretchr/testify v1.11.1
 )
 
