@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	cwp "github.com/cilium/workerpool"
@@ -18,7 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Same test setup for all the tests below
+// Same test setup for most of the tests below
+const nElements = 10000
+
 var tests = []struct {
 	name   string
 	useDlq bool
@@ -35,13 +38,12 @@ var tests = []struct {
 	},
 }
 
-const nElements = 10000
-
 func TestRun(t *testing.T) {
 
 	for _, tt := range tests {
 
 		t.Run(tt.name, func(t *testing.T) {
+
 			input, expectedOutput := makeSquares(nElements)
 			mu := sync.Mutex{}
 			actualOutput := make([]int, 0, nElements)
@@ -344,6 +346,107 @@ func TestRunWorkersWithResults(t *testing.T) {
 				require.ElementsMatch(t, expectedOutput, actualOutput)
 				require.Equal(t, 0, countTaskErrors(taskOutputs), "No errors expected when DLQ is not used")
 			}
+		})
+	}
+}
+
+func TestIncompleteQueueProcessed(t *testing.T) {
+
+	localTests := []struct {
+		name      string
+		fastDrain bool
+	}{
+		{
+			name:      "concurrent drain",
+			fastDrain: false,
+		},
+		{
+			name:      "fast drain",
+			fastDrain: true,
+		},
+	}
+
+	for _, tt := range localTests {
+
+		t.Run(tt.name, func(t *testing.T) {
+
+			// In this test, only half the elements should be processed
+			// and the rest added to the DLQ
+
+			input, expectedOutput := makeSquares(int(nElements))
+			mu := sync.Mutex{}
+			actualOutput := make([]int, 0, nElements/2)
+
+			q := queue.New[int]()
+			dlq := queue.New[int]()
+			wg := sync.WaitGroup{}
+			iterCount := atomic.Int64{}
+
+			expectedOutput = expectedOutput[:nElements/2]
+
+			// Job to be run by workerpool
+			// One instance of job is run per queued item
+			jobFunc := func(_ context.Context, q <-chan int, dlq *queue.Queue[int]) error { //nolint:unparam
+				for {
+					if iterCount.Add(1) > nElements/2 {
+						// Finish when half of queue is processed
+						return nil
+					}
+					v, ok := <-q
+					if !ok {
+						return nil
+					}
+					mu.Lock()
+					actualOutput = append(actualOutput, v*v)
+					mu.Unlock()
+				}
+			}
+
+			enqueueFunc := func() {
+				for _, v := range input {
+					_ = q.Enqueue(v)
+				}
+
+				// Must close here or Run will block forever.
+				q.Close()
+			}
+
+			if tt.fastDrain {
+				// Fill queue first
+				enqueueFunc()
+			} else {
+				// Goroutine to populate input queue
+				wg.Go(func() {
+					enqueueFunc()
+				})
+			}
+
+			// Goroutine to run the workerpool
+			wg.Go(func() {
+				_, err := workerpool.RunWorkers(
+					jobFunc,
+					q,
+					workerpool.WithContext[int](t.Context()),
+					workerpool.WithDeadLetterQueue(dlq),
+					workerpool.WithFastDrain[int](tt.fastDrain),
+				)
+
+				require.NoError(t, err)
+			})
+
+			wg.Wait()
+
+			require.ElementsMatch(t, expectedOutput, actualOutput)
+
+			// pull the DLQ and verify its content
+			dlq.Close()
+			dlqItems := make([]int, 0, dlq.Len())
+			for v := range dlq.Dequeue() {
+				dlqItems = append(dlqItems, v)
+			}
+			require.Equal(t, int(nElements/2), len(dlqItems), "Expected half the input in the DLQ")
+			require.ElementsMatch(t, input[nElements/2:], dlqItems, "DLQ items should match unprocessed input")
+
 		})
 	}
 }

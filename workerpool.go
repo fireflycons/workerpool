@@ -17,6 +17,7 @@ import (
 	"errors"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 
 	cwp "github.com/cilium/workerpool"
 	queue "github.com/fireflycons/concurrentqueue"
@@ -27,6 +28,8 @@ type poolOptions[T any] struct {
 	numWorkers int
 	taskNamer  func(int, T) string
 	dlq        *queue.Queue[T]
+	fastDrain  bool
+	errCount   *atomic.Int64 // Used only in 'Run/RunWithResults' methods to ensure DLQ is synched before drain or tests fail
 }
 
 // OptionFunc is a function that configures a worker pool.
@@ -83,6 +86,16 @@ func WithDeadLetterQueue[T any](dlq *queue.Queue[T]) OptionFunc[T] {
 	}
 }
 
+// WithFastDrain is a constructor function to set whether to use fast draining
+// of input queue to the dead letter queue (if set) at the end of the pool run.
+// You should only use this if you are sure that the input queue is not still being
+// populated by another goroutine.
+func WithFastDrain[T any](fast bool) OptionFunc[T] {
+	return func(o *poolOptions[T]) {
+		o.fastDrain = fast
+	}
+}
+
 // Run creates a pool of workers to run the given jobFunc in parallel.
 //
 // One instance of jobFunc is created for each element dequeued from q.
@@ -130,6 +143,7 @@ func Run[T any](
 		_ = wp.Submit(options.taskNamer(id, item), func(ctx context.Context) error {
 			err := jobFunc(ctx, item)
 			if err != nil && options.dlq != nil {
+				options.errCount.Add(1)
 				if qerr := options.dlq.Enqueue(item); qerr != nil {
 					return errors.Join(err, qerr)
 				}
@@ -194,6 +208,7 @@ func RunWithResults[I any, O any](
 		_ = wp.Submit(options.taskNamer(id, item), func(ctx context.Context) error {
 			err := jobFunc(ctx, item, out)
 			if err != nil && options.dlq != nil {
+				options.errCount.Add(1)
 				// Send failed item to dead letter queue
 				if qerr := options.dlq.Enqueue(item); qerr != nil {
 					return errors.Join(err, qerr)
@@ -338,6 +353,7 @@ func makePool[T any](opts ...OptionFunc[T]) (*cwp.WorkerPool, poolOptions[T]) {
 		taskNamer: func(i int, _ T) string {
 			return strconv.Itoa(i)
 		},
+		errCount: &atomic.Int64{},
 	}
 
 	for _, o := range opts {
@@ -357,10 +373,20 @@ func drainAndReturn[T any](wp *cwp.WorkerPool, q *queue.Queue[T], options poolOp
 	// Wait for pool to complete
 	res, err := wp.Drain()
 	if options.dlq != nil {
+		for options.dlq.Len() < int(options.errCount.Load()) {
+			// Ensure all errored items have been added to DLQ
+			// when the library manages the DLQ.
+			runtime.Gosched()
+		}
 		// Drain unprocessed elements to dead letter queue
-		q.DrainTo(options.dlq)
-	} else {
-		q.Drain()
+		if options.fastDrain {
+			q.DrainTo(options.dlq)
+		} else {
+			for item := range q.Dequeue() {
+				_ = options.dlq.Enqueue(item)
+			}
+		}
 	}
+
 	return res, err
 }
