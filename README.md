@@ -11,6 +11,7 @@ Package workerpool provides a wrapper around [github.com/cilium/workerpool](http
 * Uses [concurrentqueue](https://pkg.go.dev/github.com/fireflycons/concurrentqueue) to feed workers and as optional dead letter queue
 * Four run options
 * Mutex-free
+* Dead letter queue support
 
 ## Example
 
