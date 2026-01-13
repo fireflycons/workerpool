@@ -1,4 +1,4 @@
-name: go-debugger
+name: build
 
 on:
   push:

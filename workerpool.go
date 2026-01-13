@@ -9,7 +9,7 @@
 // so it is advisable to use the RunWorkers methods where possible.
 //
 // [github.com/cilium/workerpool]: https://pkg.go.dev/github.com/cilium/workerpool
-// [concurrentqueue.Queue]: https://github.com/fireflycons/concurrentqueue
+// [concurrentqueue.Queue]: https://pkg.go.dev/github.com/fireflycons/concurrentqueue
 package workerpool
 
 import (
